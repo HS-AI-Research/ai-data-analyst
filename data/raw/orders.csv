@@ -1,0 +1,36 @@
+﻿order_id,order_date,city,product,category,quantity,unit_price_usd,discount_pct,payment_method,customer_rating,returned
+1001,2026-01-03,Tehran,Laptop,Electronics,1,850,5,Card,5.0,No
+1002,2026-01-04,Shiraz,Headphones,Electronics,2,45,0,Cash,4.0,No
+1003,2026-01-05,Isfahan,Office Chair,Furniture,1,120,10,Card,4.0,No
+1004,2026-01-06,Tehran,Desk Lamp,Home,3,25,0,Online,5.0,No
+1005,2026-01-07,Tabriz,Monitor,Electronics,2,210,5,Card,4.0,No
+1006,2026-01-08,Shiraz,Notebook,Stationery,10,3,0,Cash,5.0,No
+1007,2026-01-09,Tehran,Laptop,Electronics,1,900,0,Online,4.0,No
+1008,2026-01-10,Isfahan,Office Chair,Furniture,2,115,15,Card,3.0,No
+1009,2026-01-11,Mashhad,Headphones,Electronics,1,50,0,Cash,4.0,No
+1010,2026-01-12,Tehran,Desk Lamp,Home,2,28,5,Online,5.0,No
+1011,2026-01-13,Tabriz,Monitor,Electronics,1,220,0,Card,4.0,No
+1012,2026-01-14,Shiraz,Notebook,Stationery,15,3,0,Cash,5.0,No
+1013,2026-01-15,Tehran,Laptop,Electronics,2,880,10,Card,5.0,No
+1014,2026-01-16,Mashhad,Office Chair,Furniture,1,125,5,Online,3.0,Yes
+1015,2026-01-17,Isfahan,Headphones,Electronics,3,48,0,Card,4.0,No
+1016,2026-01-18,Tehran,Desk Lamp,Home,1,26,0,Cash,4.0,No
+1017,2026-01-19,Tabriz,Monitor,Electronics,2,215,10,Online,5.0,No
+1018,2026-01-20,Shiraz,Notebook,Stationery,8,3,0,Cash,4.0,No
+1019,2026-01-21,Tehran,Laptop,Electronics,1,870,5,Card,2.0,Yes
+1020,2026-01-22,Mashhad,Office Chair,Furniture,2,118,0,Online,4.0,No
+1021,2026-01-23,Isfahan,Headphones,Electronics,2,47,5,Card,5.0,No
+1022,2026-01-24,Tehran,Desk Lamp,Home,4,24,0,Cash,4.0,No
+1023,2026-01-25,Tabriz,Monitor,Electronics,1,225,5,Online,4.0,No
+1024,2026-01-26,Shiraz,Notebook,Stationery,12,3,0,Cash,,No
+1025,2026-01-27,Tehran,Laptop,Electronics,1,920,15,Card,5.0,No
+1026,2026-01-28,Mashhad,Office Chair,Furniture,1,130,0,Online,4.0,No
+1027,2026-01-29,Isfahan,Headphones,Electronics,2,46,0,Card,4.0,No
+1028,2026-01-30,Tehran,Desk Lamp,Home,2,27,5,Cash,5.0,No
+1029,2026-01-31,Tabriz,Monitor,Electronics,1,230,0,Online,4.0,No
+1030,2026-02-01,Tehran,Laptop,Electronics,25,890,5,Card,1.0,Yes
+1031,2026-02-02,Shiraz,Notebook,Stationery,9,3,0,Cash,5.0,No
+1032,2026-02-03,Mashhad,Office Chair,Furniture,2,122,10,Online,4.0,No
+1033,2026-02-04,Tehran,Headphones,Electronics,1,49,0,Card,4.0,No
+1034,2026-02-05,Isfahan,Desk Lamp,Home,3,26,5,Online,5.0,No
+1035,2026-02-06,Tehran,Laptop,Electronics,1,-850,5,Card,3.0,No

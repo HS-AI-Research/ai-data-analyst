@@ -1,29 +1,44 @@
-# Python
+﻿# Python
 __pycache__/
 *.py[cod]
-*.pyd
 
 # Virtual environments
 env/
-.venv/
 venv/
+.venv/
 
-# Environment variables
-.env
-.env.*
-
-# Data and outputs
-data/
-outputs/
+# Testing
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
 
 # IDE
 .vscode/
+.idea/
 
-# Test and coverage
-.pytest_cache/
-.coverage
-htmlcov/
+# Environment and secrets
+.env
+.env.*
+!.env.example
+
+# Local AI models
+*.gguf
+models/
+
+# Logs and temporary files
+*.log
+*.tmp
+*.bak
 
 # OS
 .DS_Store
 Thumbs.db
+desktop.ini
+
+# Generated outputs
+outputs/
+
+# Local backup
+requirements-full.txt
