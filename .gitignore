@@ -42,3 +42,14 @@ outputs/
 
 # Local backup
 requirements-full.txt
+
+# Temporary scripts and local backups
+/app_backup.py
+/update_assistant*.py
+*_backup*.py
+src/*backup*
+src/*.bak
+src/*.backup*
+
+# Accidental local files
+/utput *

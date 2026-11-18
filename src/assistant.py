@@ -1,44 +1,76 @@
 
 """
 General-Purpose Data Analysis Assistant
+=======================================
 
 Responsibilities:
-- Coordinate question parsing and query execution.
-- Generate deterministic analytical answers.
-- Support Persian and English responses.
-- Preserve original dataset category values.
+- Coordinate the complete analysis pipeline.
+- Validate user questions and datasets.
+- Classify exploratory and analytical requests.
+- Route exploratory requests to the EDA engine.
+- Parse analytical questions into executable queries.
+- Execute deterministic numerical calculations.
+- Format analytical evidence in Persian or English.
+- Use Ollama for classification and evidence interpretation.
 - Generate charts for supported analytical requests.
-- Use Ollama only when deterministic formatting is insufficient.
+- Preserve original dataset category values.
+- Return structured analysis results and execution metadata.
 
-All numerical calculations are performed by query_engine.py.
+Architecture:
+
+    User Input
+        |
+    Input Validation
+        |
+    Intent Classifier
+        |
+        +--------------------------+
+        |                          |
+    Exploratory Analysis      Analytical Query
+        |                          |
+    EDA Engine                Intent Parser
+        |                          |
+    EDA Evidence              Query Engine
+        |                          |
+        +------------+-------------+
+                     |
+                  Evidence
+                     |
+             Deterministic Formatter
+                     |
+             LLM Interpretation
+                (when available)
+                     |
+              Chart Generator
+                     |
+              Structured Result
+
+Numerical calculations are performed deterministically
+by the EDA and query engines using Pandas.
 """
 
 import os
 import json
 import math
 import re
+import time
 
 import pandas as pd
-from ollama import Client
-
-from src.config import (
-    OLLAMA_HOST,
-    OLLAMA_MODEL,
-    TEMPERATURE,
-)
+from src.config import OLLAMA_MODEL
+from src.ollama_client import ask_llm
 
 from src.intent_parser import parse_question
 from src.query_engine import execute_query
 from src.metric_registry import get_metric
 from src.chart_generator import generate_trend_chart
-from src.dataset_context import build_dataset_context
+from src.intent_classifier import classify_intent
+from src.eda_engine import analyze_dataset, build_llm_evidence
+
 
 
 # =========================================================
 # CONFIGURATION
 # =========================================================
-
-OLLAMA_CLIENT = Client(host=OLLAMA_HOST)
 
 DEFAULT_OUTPUT_LANGUAGE = os.getenv(
     "OUTPUT_LANGUAGE",
@@ -47,21 +79,28 @@ DEFAULT_OUTPUT_LANGUAGE = os.getenv(
 
 MAX_FILTER_DISPLAY = 10
 
+SUPPORTED_LANGUAGES = ("fa", "en")
+
+# Distinguishes an omitted model argument from model=None.
+_DEFAULT_MODEL = object()
+
 
 # =========================================================
 # LANGUAGE
 # =========================================================
 
 def detect_language(text):
-    text = str(text)
+    """Detect Persian or English from text."""
 
-    if re.search(r"[\u0600-\u06FF]", text):
+    if re.search(r"[\u0600-\u06FF]", str(text)):
         return "fa"
 
     return "en"
 
 
 def resolve_output_language(question):
+    """Resolve the language used for the final answer."""
+
     language = DEFAULT_OUTPUT_LANGUAGE
 
     if language in ("fa", "persian", "farsi"):
@@ -117,6 +156,7 @@ MESSAGES = {
         "max": "حداکثر",
         "count_operation": "تعداد",
         "nunique": "تعداد مقادیر یکتا",
+        "unknown": "نامشخص",
     },
 
     "en": {
@@ -158,11 +198,14 @@ MESSAGES = {
         "max": "Maximum",
         "count_operation": "Count",
         "nunique": "Unique Count",
+        "unknown": "Unknown",
     },
 }
 
 
 def get_text(language, key):
+    """Return a localized text resource."""
+
     language = language if language in MESSAGES else "en"
 
     return MESSAGES[language].get(
@@ -176,6 +219,8 @@ def get_text(language, key):
 # =========================================================
 
 def is_missing(value):
+    """Safely detect missing scalar values."""
+
     try:
         result = pd.isna(value)
 
@@ -189,6 +234,8 @@ def is_missing(value):
 
 
 def safe_text(value):
+    """Convert values to display-safe text."""
+
     if value is None or is_missing(value):
         return "-"
 
@@ -208,6 +255,8 @@ def safe_text(value):
 
 
 def format_number(value, decimals=2):
+    """Format a numeric value without inventing precision."""
+
     if value is None or is_missing(value):
         return "-"
 
@@ -227,6 +276,8 @@ def format_number(value, decimals=2):
 
 
 def format_percentage(value):
+    """Format a percentage value."""
+
     formatted = format_number(value)
 
     if formatted == "-":
@@ -237,7 +288,7 @@ def format_percentage(value):
 
 def format_metric_value(value, metric_name=None):
     """
-    Format metric values using metric definitions.
+    Format metric values according to metric metadata.
 
     Currency is not assumed unless explicitly declared.
     """
@@ -314,13 +365,14 @@ COLUMN_LABELS = {
         "score": "امتیاز",
         "rating": "رتبه",
     },
-
     "en": {},
 }
 
 
 def get_column_label(column, language="en"):
-    if not column:
+    """Return a localized column label."""
+
+    if column is None or column == "":
         return "Column" if language == "en" else "ستون"
 
     column = str(column)
@@ -341,6 +393,8 @@ def get_column_label(column, language="en"):
 # =========================================================
 
 def get_metric_label(metric_name, language="en"):
+    """Return a metric label."""
+
     if not metric_name:
         return get_text(language, "metric")
 
@@ -353,6 +407,8 @@ def get_metric_label(metric_name, language="en"):
 
 
 def get_aggregation_label(aggregation, language="en"):
+    """Return a localized aggregation label."""
+
     if not aggregation:
         return ""
 
@@ -489,13 +545,11 @@ def format_count_answer(evidence, language="en"):
             metric,
             language
         )
-
     elif column:
         label = get_column_label(
             column,
             language
         )
-
     else:
         label = get_text(
             language,
@@ -794,6 +848,8 @@ def generate_deterministic_answer(
     evidence,
     query=None
 ):
+    """Format analytical evidence without using an LLM."""
+
     language = resolve_output_language(
         question
     )
@@ -828,16 +884,57 @@ def generate_deterministic_answer(
 # OLLAMA FALLBACK
 # =========================================================
 
-def generate_llm_answer(question, evidence):
-    language = resolve_output_language(
-        question
-    )
+
+def _generate_llm_answer_with_status(
+    question,
+    evidence,
+    model=None
+):
+    """
+    Generate an answer using an explicitly selected Ollama model.
+
+    Returns:
+        (answer, succeeded, error)
+
+    Numerical calculations are never delegated to the LLM.
+    """
+
+    language = resolve_output_language(question)
 
     language_name = (
         "Persian"
         if language == "fa"
         else "English"
     )
+
+    evidence_json = json.dumps(
+        evidence,
+        ensure_ascii=False,
+        indent=2,
+        default=str
+    )
+
+    # An explicit None means that no model is active.
+    if model is None:
+
+        if language == "fa":
+            message = (
+                "برای تکمیل پاسخ به مدل زبانی نیاز است، "
+                "اما در حال حاضر هیچ مدل فعالی انتخاب نشده است. "
+                "از بخش AI Model Manager یک مدل را انتخاب و فعال کنید."
+            )
+        else:
+            message = (
+                "This question requires an LLM-generated explanation, "
+                "but no model is currently active. "
+                "Select and activate a model in AI Model Manager."
+            )
+
+        return (
+            message + "\n\n" + evidence_json,
+            False,
+            "No active Ollama model.",
+        )
 
     prompt = f"""
 You are a professional general-purpose data analyst.
@@ -852,65 +949,103 @@ Rules:
 5. Preserve original category names and labels.
 6. Clearly distinguish facts from interpretations.
 7. If evidence is insufficient, explicitly say so.
+8. Do not introduce information absent from the evidence.
 
 USER QUESTION:
 {question}
 
 ANALYTICAL EVIDENCE:
-{json.dumps(evidence, ensure_ascii=False, default=str)}
+{evidence_json}
 
 Provide a clear and concise answer.
 """
 
     try:
-        response = OLLAMA_CLIENT.chat(
-            model=OLLAMA_MODEL,
-            messages=[
-                {
-                    "role": "user",
-                    "content": prompt,
-                }
-            ],
-            options={
-                "temperature": TEMPERATURE,
-            },
+
+        answer = ask_llm(
+            prompt=prompt,
+            model=model
         )
 
-        message = response.get(
-            "message",
-            {}
-        )
+        if isinstance(answer, str) and answer.strip():
 
-        content = message.get(
-            "content",
-            ""
-        )
+            return (
+                answer.strip(),
+                True,
+                None,
+            )
 
-        if content:
-            return content.strip()
+        raise RuntimeError(
+            "Ollama returned an empty response."
+        )
 
     except Exception as error:
+
+        error_message = str(error)
+
         print(
-            f"Ollama answer generation failed: {error}"
+            f"Ollama answer generation failed: {error_message}"
         )
 
-    return json.dumps(
-        evidence,
-        ensure_ascii=False,
-        indent=2,
-        default=str
+        if language == "fa":
+            fallback_message = (
+                "ارتباط با مدل زبانی ناموفق بود. "
+                "اطلاعات تحلیلی محاسبه‌شده در ادامه آمده است."
+            )
+        else:
+            fallback_message = (
+                "LLM generation failed. "
+                "The calculated analytical evidence is provided below."
+            )
+
+        return (
+            fallback_message + "\n\n" + evidence_json,
+            False,
+            error_message,
+        )
+
+
+def generate_llm_answer(
+    question,
+    evidence,
+    model=_DEFAULT_MODEL
+):
+    """
+    Generate a natural-language answer using Ollama.
+
+    If model is omitted, the configured default model is used
+    for backward compatibility.
+
+    If model=None is explicitly supplied, no model is active.
+    """
+
+    selected_model = (
+        OLLAMA_MODEL
+        if model is _DEFAULT_MODEL
+        else model
     )
 
+    answer, _, _ = _generate_llm_answer_with_status(
+        question,
+        evidence,
+        model=selected_model
+    )
 
-# =========================================================
+    return answer
+
+
 # MAIN ANSWER GENERATOR
 # =========================================================
+
 
 def generate_answer(
     question,
     evidence,
-    query=None
+    query=None,
+    model=_DEFAULT_MODEL
 ):
+    """Select deterministic formatting or LLM fallback."""
+
     answer = generate_deterministic_answer(
         question,
         evidence,
@@ -920,17 +1055,25 @@ def generate_answer(
     if answer is not None:
         return answer
 
+    selected_model = (
+        OLLAMA_MODEL
+        if model is _DEFAULT_MODEL
+        else model
+    )
+
     return generate_llm_answer(
         question,
-        evidence
+        evidence,
+        model=selected_model
     )
 
 
-# =========================================================
 # CHART REQUEST DETECTION
 # =========================================================
 
 def is_chart_request(question):
+    """Detect whether the user explicitly requests a chart."""
+
     keywords = [
         "chart",
         "plot",
@@ -960,6 +1103,8 @@ def generate_requested_charts(
     question,
     evidence
 ):
+    """Generate charts for supported analytical operations."""
+
     if not is_chart_request(question):
         return []
 
@@ -988,10 +1133,12 @@ def generate_requested_charts(
 
 
 # =========================================================
-# MAIN ASSISTANT PIPELINE
+# INPUT VALIDATION
 # =========================================================
 
-def answer_question(df, question):
+def validate_analysis_input(df, question):
+    """Validate dataset and question before processing."""
+
     if not isinstance(df, pd.DataFrame):
         raise TypeError(
             "Input must be a Pandas DataFrame."
@@ -1014,6 +1161,16 @@ def answer_question(df, question):
             "Question cannot be empty."
         )
 
+    return question
+
+
+# =========================================================
+# QUERY PIPELINE
+# =========================================================
+
+def build_analysis_evidence(df, question):
+    """Parse the question and execute the analytical query."""
+
     query = parse_question(
         question,
         df
@@ -1034,15 +1191,380 @@ def answer_question(df, question):
             "Query engine returned an invalid result."
         )
 
-    answer = generate_answer(
-        question,
-        evidence,
-        query
+    return query, evidence
+
+
+# =========================================================
+# MAIN ASSISTANT PIPELINE
+# =========================================================
+
+
+def _format_eda_answer(question, evidence):
+    """
+    Produce a deterministic exploratory analysis report.
+
+    All numerical values come directly from EDA evidence.
+    No calculations or data modifications are performed here.
+    """
+
+    language = resolve_output_language(question)
+
+    dataset = evidence.get("dataset", {})
+    numeric = evidence.get("numeric", {})
+    categorical = evidence.get("categorical", {})
+    warnings = evidence.get("quality_warnings", [])
+    outliers = evidence.get("outliers", {})
+    dates = evidence.get("dates", {})
+
+    if language == "fa":
+        lines = [
+            "# ????? ????? ??????? ????",
+            "",
+            "## ?. ???? ??? ????",
+            f"- ????? ???????: {dataset.get('rows', 0)}",
+            f"- ????? ???????: {dataset.get('columns', 0)}",
+            f"- ????? ?? ???????: {dataset.get('cells', 0)}",
+            f"- ???????? ??????: {dataset.get('duplicate_rows', 0)}",
+            f"- ???????? ????: {dataset.get('missing_cells', 0)}",
+            f"- ???? ???????? ????: {dataset.get('missing_percentage', 0)}?",
+        ]
+
+        if dataset.get("column_names"):
+            lines.extend([
+                "",
+                "???????? ?????:",
+                ", ".join(map(str, dataset["column_names"])),
+            ])
+
+        lines.extend(["", "## ?. ???????? ????"])
+
+        if numeric:
+            for column, stats in numeric.items():
+                lines.append(f"### {column}")
+                lines.append(
+                    f"- ????? ?????? ?????: {stats.get('count')}"
+                )
+                lines.append(
+                    f"- ???????: {stats.get('mean')}"
+                )
+                lines.append(
+                    f"- ?????: {stats.get('median')}"
+                )
+                lines.append(
+                    f"- ?????: {stats.get('min')}"
+                )
+                lines.append(
+                    f"- ??????: {stats.get('max')}"
+                )
+                lines.append(
+                    f"- ?????? ????: {stats.get('negative_count')}"
+                )
+        else:
+            lines.append("???? ???? ???? ????? ??????? ???.")
+
+        lines.extend(["", "## ?. ???????? ???????"])
+
+        if categorical:
+            for column, stats in categorical.items():
+                lines.append(
+                    f"- **{column}**: "
+                    f"{stats.get('unique_count')} ????? ???? "
+                    f"?? {stats.get('count')} ????? ?????"
+                )
+
+                for item in stats.get("top_values", [])[:3]:
+                    lines.append(
+                        f"  - {item.get('value')}: "
+                        f"{item.get('count')} ???? "
+                        f"({item.get('percentage')}?)"
+                    )
+        else:
+            lines.append("???? ??????? ???? ????? ??????? ???.")
+
+        lines.extend(["", "## ?. ???????? ????? ????"])
+
+        if warnings:
+            for warning in warnings:
+                lines.append(
+                    f"- **{warning.get('type', 'warning')}**"
+                    f" | ????: {warning.get('column', '?????')}"
+                    f" | ?????: {warning.get('count', '??????')}"
+                    f" | {warning.get('message', '')}"
+                )
+        else:
+            lines.append("????? ????? ?? ????????? ????????? ???? ???.")
+
+        lines.extend(["", "## ?. ????? ???????? ???"])
+
+        if outliers:
+            for column, stats in outliers.items():
+                lines.append(
+                    f"- {column}: {stats.get('count', 0)} "
+                    "????? ?????? ??? ??????? ?????"
+                )
+        else:
+            lines.append("????? ?? ????? ???????? ???????? ??? ??? ???? ???.")
+
+        lines.extend(["", "## ?. ????? ????????"])
+
+        if dates:
+            for column, stats in dates.items():
+                lines.append(f"- **{column}**: {stats}")
+        else:
+            lines.append("???? ?????? ???? ????? ??????? ???.")
+
+        lines.extend([
+            "",
+            "## ??????????? ?????",
+            "- ?????? ??? ??????? ??? ??????.",
+            "- ?????? ???? ???? ????? ????? ???????? ??????? ???? ????????.",
+            "- ??????? ?? ???? ????? ??? ? ?????? ????.",
+            "- ??? ????? ??? ?? ????? ???? ???.",
+        ])
+
+    else:
+        lines = [
+            "# Exploratory Data Analysis Report",
+            "",
+            "## 1. Dataset Overview",
+            f"- Rows: {dataset.get('rows', 0)}",
+            f"- Columns: {dataset.get('columns', 0)}",
+            f"- Total cells: {dataset.get('cells', 0)}",
+            f"- Duplicate rows: {dataset.get('duplicate_rows', 0)}",
+            f"- Missing cells: {dataset.get('missing_cells', 0)}",
+            f"- Missing percentage: {dataset.get('missing_percentage', 0)}%",
+        ]
+
+        if dataset.get("column_names"):
+            lines.extend([
+                "",
+                "Columns:",
+                ", ".join(map(str, dataset["column_names"])),
+            ])
+
+        lines.extend(["", "## 2. Numeric Statistics"])
+
+        if numeric:
+            for column, stats in numeric.items():
+                lines.append(f"### {column}")
+                lines.append(f"- Valid values: {stats.get('count')}")
+                lines.append(f"- Mean: {stats.get('mean')}")
+                lines.append(f"- Median: {stats.get('median')}")
+                lines.append(f"- Minimum: {stats.get('min')}")
+                lines.append(f"- Maximum: {stats.get('max')}")
+                lines.append(
+                    f"- Negative values: {stats.get('negative_count')}"
+                )
+        else:
+            lines.append("No numeric columns were identified.")
+
+        lines.extend(["", "## 3. Categorical Columns"])
+
+        if categorical:
+            for column, stats in categorical.items():
+                lines.append(
+                    f"- **{column}**: {stats.get('unique_count')} "
+                    f"unique values from {stats.get('count')} valid values"
+                )
+
+                for item in stats.get("top_values", [])[:3]:
+                    lines.append(
+                        f"  - {item.get('value')}: "
+                        f"{item.get('count')} "
+                        f"({item.get('percentage')}%)"
+                    )
+        else:
+            lines.append("No categorical columns were identified.")
+
+        lines.extend(["", "## 4. Data Quality Warnings"])
+
+        if warnings:
+            for warning in warnings:
+                lines.append(
+                    f"- **{warning.get('type', 'warning')}**"
+                    f" | Column: {warning.get('column', 'General')}"
+                    f" | Count: {warning.get('count', 'Unknown')}"
+                    f" | {warning.get('message', '')}"
+                )
+        else:
+            lines.append("No warnings were identified by the performed checks.")
+
+        lines.extend(["", "## 5. Potential Outliers"])
+
+        if outliers:
+            for column, stats in outliers.items():
+                lines.append(
+                    f"- {column}: {stats.get('count', 0)} "
+                    "potential outliers requiring review"
+                )
+        else:
+            lines.append("No potential outliers were reported.")
+
+        lines.extend(["", "## 6. Date Analysis"])
+
+        if dates:
+            for column, stats in dates.items():
+                lines.append(f"- **{column}**: {stats}")
+        else:
+            lines.append("No date columns were identified.")
+
+        lines.extend([
+            "",
+            "## Analysis Limitations",
+            "- Outliers are screening signals, not confirmed errors.",
+            "- Negative values are not automatically invalid.",
+            "- Correlation does not establish causation.",
+            "- No rows or values were modified or removed.",
+        ])
+
+    return "\n".join(lines)
+
+
+def answer_question(
+    df,
+    question,
+    model=_DEFAULT_MODEL
+):
+    """
+    Run the complete general-purpose analysis pipeline.
+
+    Exploratory requests:
+        Intent classifier -> EDA engine -> evidence -> LLM interpretation
+
+    Analytical requests:
+        Intent classifier -> query parser -> query engine -> formatter
+
+    Numerical calculations remain deterministic.
+    """
+
+    started_at = time.perf_counter()
+
+    question = validate_analysis_input(
+        df,
+        question
     )
 
-    charts = generate_requested_charts(
-        question,
-        evidence
+    # Preserve existing model-selection behavior.
+    selected_model = (
+        OLLAMA_MODEL
+        if model is _DEFAULT_MODEL
+        else model
+    )
+
+    if isinstance(selected_model, str):
+        selected_model = selected_model.strip() or None
+
+    # -----------------------------------------------------
+    # 1. Classify user intent
+    # -----------------------------------------------------
+
+    classification = classify_intent(
+        question=question,
+        df=df,
+        model=selected_model,
+    )
+
+    intent = classification.get("intent")
+
+    # -----------------------------------------------------
+    # 2. Exploratory analysis route
+    # -----------------------------------------------------
+
+    if intent == "exploratory_analysis":
+
+        evidence = analyze_dataset(df)
+
+        llm_evidence = build_llm_evidence(
+            evidence
+        )
+
+        # The original complete evidence is retained for the UI.
+        # Only the compact evidence is passed to the LLM.
+        deterministic_answer = _format_eda_answer(
+            question,
+            evidence
+        )
+
+        llm_attempted = selected_model is not None
+        llm_succeeded = False
+        llm_error = None
+
+        if llm_attempted:
+
+            answer, llm_succeeded, llm_error = (
+                _generate_llm_answer_with_status(
+                    question,
+                    llm_evidence,
+                    model=selected_model,
+                )
+            )
+
+            if not llm_succeeded:
+                answer = deterministic_answer
+
+        else:
+            answer = deterministic_answer
+
+        query = {
+            "intent": "exploratory_analysis",
+            "classifier": classification.get("classifier"),
+            "confidence": classification.get("confidence"),
+        }
+
+        charts = []
+
+        operation = "exploratory_analysis"
+
+    # -----------------------------------------------------
+    # 3. Standard analytical query route
+    # -----------------------------------------------------
+
+    else:
+
+        query, evidence = build_analysis_evidence(
+            df,
+            question
+        )
+
+        deterministic_answer = generate_deterministic_answer(
+            question,
+            evidence,
+            query
+        )
+
+        llm_attempted = False
+        llm_succeeded = False
+        llm_error = None
+
+        if deterministic_answer is not None:
+
+            answer = deterministic_answer
+
+        else:
+
+            llm_attempted = selected_model is not None
+
+            answer, llm_succeeded, llm_error = (
+                _generate_llm_answer_with_status(
+                    question,
+                    evidence,
+                    model=selected_model,
+                )
+            )
+
+        charts = generate_requested_charts(
+            question,
+            evidence
+        )
+
+        operation = evidence.get("operation")
+
+    # -----------------------------------------------------
+    # 4. Preserve the existing output contract
+    # -----------------------------------------------------
+
+    execution_time = (
+        time.perf_counter() - started_at
     )
 
     return {
@@ -1052,4 +1574,15 @@ def answer_question(df, question):
         "evidence": evidence,
         "answer": answer,
         "charts": charts,
+
+        "model": selected_model,
+        "selected_model": selected_model,
+
+        "llm_used": llm_succeeded,
+        "llm_attempted": llm_attempted,
+        "llm_succeeded": llm_succeeded,
+        "llm_error": llm_error,
+
+        "execution_time": round(execution_time, 4),
+        "operation": operation,
     }
